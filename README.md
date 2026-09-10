@@ -16,9 +16,19 @@
 在目标 Linux x86_64 服务器上执行：
 
 ```bash
-git clone https://github.com/AIRzZ90/quanbushu.git quantus-mining-control
-cd quantus-mining-control
-MINING_CONTROL_PASSWORD='设置一个新的面板密码' ./install.sh
+git clone https://github.com/AIRzZ90/quanbushu.git /root/quantus-mining-control && cd /root/quantus-mining-control && MINING_CONTROL_PASSWORD='设置一个新的面板密码' ./install.sh
+```
+
+安装脚本会生成密码哈希和 HTTPS 证书，并安装 `supervisor` 服务。再次部署或更新已有目录时，使用：
+
+```bash
+cd /root/quantus-mining-control && git pull --ff-only origin main && ./install.sh
+```
+
+如果已有目录还没有 GitHub 远程地址，先执行一次：
+
+```bash
+cd /root/quantus-mining-control && git remote add origin https://github.com/AIRzZ90/quanbushu.git && git fetch origin main && git checkout -B main origin/main && ./install.sh
 ```
 
 在当前 Vast.ai 实例上，已有 `10200` 容器端口，对应公网端口 `40211`。部署后访问：
