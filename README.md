@@ -19,7 +19,9 @@
 git clone https://github.com/AIRzZ90/quanbushu.git /root/quantus-mining-control && cd /root/quantus-mining-control && MINING_CONTROL_PASSWORD='设置一个新的面板密码' ./install.sh
 ```
 
-安装脚本会生成密码哈希和 HTTPS 证书，并安装 `supervisor` 服务。再次部署或更新已有目录时，使用：
+安装脚本会生成密码哈希和 HTTPS 证书，并安装 `supervisor` 服务。部署结束时会打印前端登录地址。Vast.ai 环境会自动使用 `PUBLIC_IPADDR` 和 `VAST_TCP_PORT_<容器端口>` 计算公网地址；其他环境可以通过 `MINING_CONTROL_PUBLIC_URL` 指定完整地址。
+
+再次部署或更新已有目录时，使用：
 
 ```bash
 cd /root/quantus-mining-control && git pull --ff-only origin main && ./install.sh
@@ -31,18 +33,20 @@ cd /root/quantus-mining-control && git pull --ff-only origin main && ./install.s
 cd /root/quantus-mining-control && git remote add origin https://github.com/AIRzZ90/quanbushu.git && git fetch origin main && git checkout -B main origin/main && ./install.sh
 ```
 
-在当前 Vast.ai 实例上，已有 `10200` 容器端口，对应公网端口 `40211`。部署后访问：
-
-```text
-https://142.204.97.21:40211/
-```
-
-证书是自签名证书，浏览器第一次会显示证书提示。确认地址和证书后再输入助记词。
+部署完成后直接打开脚本输出的“前端登录地址”。证书是自签名证书，浏览器第一次会显示证书提示；确认地址和证书后再输入助记词。
 
 如果使用域名，可以在部署时指定证书中的主机名：
 
 ```bash
 MINING_CONTROL_PUBLIC_HOST='miner.example.com' \
+MINING_CONTROL_PASSWORD='面板密码' \
+./install.sh
+```
+
+如果公网地址不是 Vast.ai 自动映射的地址，也可以直接指定：
+
+```bash
+MINING_CONTROL_PUBLIC_URL='https://miner.example.com:10200/' \
 MINING_CONTROL_PASSWORD='面板密码' \
 ./install.sh
 ```
@@ -70,7 +74,7 @@ MINING_CONTROL_GPU_BATCH_SIZE=16777216
 MINING_CONTROL_MINING_DIR=/root/quantus-mining
 ```
 
-当前 RTX 5090 服务器建议先用 `8 CPU workers + 1 GPU`。这台机器实测 24 个 CPU worker 只有约 `4.8 MH/s`，相对于约 `1.2 GH/s` 的 GPU 增益很小。
+如果没有显式设置 `MINING_CONTROL_GPU_DEVICES`，`install.sh` 会在有 `nvidia-smi` 时自动使用检测到的 GPU 数量，最多启用 16 张；没有 NVIDIA GPU 时回退为 1。多 GPU 服务器可以在 `.env` 中明确设置数量。
 
 ## 运行与日志
 

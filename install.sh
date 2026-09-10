@@ -49,6 +49,28 @@ CONTROL_TLS="${MINING_CONTROL_TLS:-1}"
 NODE_VERSION="${QUANTUS_NODE_VERSION:-${NODE_VERSION}}"
 MINER_VERSION="${QUANTUS_MINER_VERSION:-${MINER_VERSION}}"
 
+detect_gpu_devices() {
+  if [ -n "${MINING_CONTROL_GPU_DEVICES:-}" ]; then
+    printf '%s' "$MINING_CONTROL_GPU_DEVICES"
+    return
+  fi
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local count
+    if count="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"; then
+      if [ "$count" -gt 0 ] 2>/dev/null; then
+        [ "$count" -le 16 ] || count=16
+        printf '%s' "$count"
+        return
+      fi
+    fi
+  fi
+
+  printf '1'
+}
+
+GPU_DEVICES="$(detect_gpu_devices)"
+
 case "$(uname -m)" in
   x86_64|amd64)
     NODE_TARGET="x86_64-unknown-linux-gnu"
@@ -169,7 +191,7 @@ MINING_CONTROL_TLS="${CONTROL_TLS}"
 MINING_CONTROL_REQUIRE_HTTPS="${MINING_CONTROL_REQUIRE_HTTPS:-1}"
 MINING_CONTROL_NODE_NAME="${MINING_CONTROL_NODE_NAME:-quantus-miner}"
 MINING_CONTROL_CPU_WORKERS="${MINING_CONTROL_CPU_WORKERS:-8}"
-MINING_CONTROL_GPU_DEVICES="${MINING_CONTROL_GPU_DEVICES:-1}"
+MINING_CONTROL_GPU_DEVICES="${GPU_DEVICES}"
 MINING_CONTROL_CUDA_GPU="${MINING_CONTROL_CUDA_GPU:-1}"
 MINING_CONTROL_GPU_BATCH_SIZE="${MINING_CONTROL_GPU_BATCH_SIZE:-16777216}"
 MINING_CONTROL_GPU_THROTTLE_MS="${MINING_CONTROL_GPU_THROTTLE_MS:-0}"
@@ -183,6 +205,9 @@ MINING_CONTROL_NODE_RPC_PORT="${MINING_CONTROL_NODE_RPC_PORT:-9944}"
 MINING_CONTROL_MINER_LISTEN_PORT="${MINING_CONTROL_MINER_LISTEN_PORT:-9833}"
 MINING_CONTROL_MINER_METRICS_PORT="${MINING_CONTROL_MINER_METRICS_PORT:-9900}"
 MINING_CONTROL_CHAIN="${MINING_CONTROL_CHAIN:-mainnet}"
+MINING_CONTROL_PUBLIC_HOST="${MINING_CONTROL_PUBLIC_HOST:-}"
+MINING_CONTROL_PUBLIC_PORT="${MINING_CONTROL_PUBLIC_PORT:-}"
+MINING_CONTROL_PUBLIC_URL="${MINING_CONTROL_PUBLIC_URL:-}"
 MINING_CONTROL_TLS_CERT="${TLS_CERT}"
 MINING_CONTROL_TLS_KEY="${TLS_KEY}"
 EOF
@@ -222,8 +247,64 @@ else
   die "未找到 supervisor 或 systemd，无法注册常驻控制服务。"
 fi
 
+wait_for_control() {
+  local health_url
+  health_url="http://127.0.0.1:${CONTROL_PORT}/healthz"
+  if [ "$CONTROL_TLS" != "0" ]; then
+    health_url="https://127.0.0.1:${CONTROL_PORT}/healthz"
+  fi
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    if [ "$CONTROL_TLS" != "0" ]; then
+      if curl -kfsS --max-time 2 "$health_url" >/dev/null 2>&1; then
+        return 0
+      fi
+    elif curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+login_url() {
+  local scheme public_url public_host public_port port_variable url_host
+  scheme="http"
+  [ "$CONTROL_TLS" != "0" ] && scheme="https"
+  public_url="${MINING_CONTROL_PUBLIC_URL:-}"
+
+  if [ -z "$public_url" ]; then
+    public_host="${MINING_CONTROL_PUBLIC_HOST:-${PUBLIC_IPADDR:-}}"
+    public_port="${MINING_CONTROL_PUBLIC_PORT:-}"
+    if [ -z "$public_port" ]; then
+      port_variable="VAST_TCP_PORT_${CONTROL_PORT}"
+      public_port="${!port_variable:-}"
+    fi
+    [ -n "$public_host" ] || public_host="localhost"
+    if [[ "$public_host" == *:* && "$public_host" != \[*\] ]]; then
+      url_host="[${public_host}]"
+    else
+      url_host="$public_host"
+    fi
+    if [ -n "$public_port" ]; then
+      public_url="${scheme}://${url_host}:${public_port}/"
+    else
+      public_url="${scheme}://${url_host}:${CONTROL_PORT}/"
+    fi
+  elif [[ "$public_url" != */ ]]; then
+    public_url="${public_url}/"
+  fi
+
+  printf '%s' "$public_url"
+}
+
 info "部署完成。"
 info "控制面板内部端口: ${CONTROL_PORT}"
 if [ "$CONTROL_TLS" != "0" ]; then
   info "控制面板协议: HTTPS（自签名证书，首次打开需要在浏览器中确认证书）"
 fi
+if wait_for_control; then
+  info "控制面板健康检查: 正常"
+else
+  info "控制面板健康检查: 超时，请检查 supervisor 或 systemd 日志。"
+fi
+info "前端登录地址: $(login_url)"
