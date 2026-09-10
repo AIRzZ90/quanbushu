@@ -1,0 +1,6 @@
+.env
+data/
+tls/*.pem
+*.log
+__pycache__/
+*.py[cod]

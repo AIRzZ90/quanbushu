@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quantus Miner Monitor</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section id="loginView" class="login-view" aria-labelledby="loginTitle">
+      <div class="login-mark">Q</div>
+      <p class="eyebrow">QUANTUS / MAINNET</p>
+      <h1 id="loginTitle">矿工监控</h1>
+      <p class="login-subtitle">实时算力、设备效率与链上产出</p>
+      <form id="loginForm" class="login-form">
+        <label for="password">访问密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit" class="primary-button">进入监控 <span aria-hidden="true">→</span></button>
+        <p id="loginError" class="form-error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="dashboardView" class="dashboard-view" hidden>
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">Q</span>
+          <div>
+            <strong>Quantus Miner</strong>
+            <span>主网实时监控</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="last-update"><span id="statusDot" class="status-dot"></span><span id="statusText">连接中</span><small id="lastUpdate">—</small></div>
+          <button id="refreshButton" class="icon-button" type="button" title="立即刷新" aria-label="立即刷新">↻</button>
+          <button id="logoutButton" class="icon-button" type="button" title="退出登录" aria-label="退出登录">⎋</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div id="errorBanner" class="error-banner" hidden></div>
+
+        <section class="panel control-panel" aria-labelledby="controlTitle">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">CONTROL</p>
+              <h2 id="controlTitle">启动挖矿</h2>
+            </div>
+            <span id="controlState" class="badge">—</span>
+          </div>
+          <form id="startForm" class="control-form">
+            <div class="control-secret">
+              <label for="mnemonic">24 词助记词</label>
+              <textarea id="mnemonic" name="mnemonic" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="输入 24 个单词，以空格分隔"></textarea>
+              <small>仅用于派生本次挖矿奖励地址；提交后立即清空。</small>
+            </div>
+            <div class="control-grid">
+              <label>
+                <span>节点名</span>
+                <input id="nodeName" name="nodeName" type="text" value="quantus-miner" maxlength="64" autocomplete="off">
+              </label>
+              <label>
+                <span>账户索引</span>
+                <input id="walletIndex" name="walletIndex" type="number" value="0" min="0" step="1">
+              </label>
+              <label>
+                <span>CPU workers</span>
+                <input id="cpuWorkers" name="cpuWorkers" type="number" value="8" min="0" max="96" step="1">
+              </label>
+              <label>
+                <span>GPU devices</span>
+                <input id="gpuDevices" name="gpuDevices" type="number" value="1" min="0" max="16" step="1">
+              </label>
+            </div>
+            <div class="control-actions">
+              <button id="startMiningButton" type="submit" class="primary-button">启动 / 重启矿工 <span aria-hidden="true">→</span></button>
+              <button id="stopMiningButton" type="button" class="secondary-button">停止挖矿</button>
+              <span id="controlMessage" class="control-message" role="status"></span>
+            </div>
+          </form>
+        </section>
+
+        <section class="kpi-grid" aria-label="核心指标">
+          <article class="kpi-card accent-orange">
+            <span class="kpi-label">当前算力</span>
+            <strong id="hashRate">—</strong>
+            <small id="hashRateSub">GPU —</small>
+          </article>
+          <article class="kpi-card accent-blue">
+            <span class="kpi-label">平均算力</span>
+            <strong id="averageHashRate">—</strong>
+            <small id="sessionHashes">监控累计 —</small>
+          </article>
+          <article class="kpi-card accent-green">
+            <span class="kpi-label">理论日产出</span>
+            <strong id="estimatedDaily">—</strong>
+            <small id="expectedBlocks">预期出块 —</small>
+          </article>
+          <article class="kpi-card accent-purple">
+            <span class="kpi-label">监控期间余额变化</span>
+            <strong id="observedOutput">—</strong>
+            <small id="monitorStarted">监控开始 —</small>
+          </article>
+          <article class="kpi-card accent-yellow">
+            <span class="kpi-label">算力效率</span>
+            <strong id="hashesPerWatt">—</strong>
+            <small id="energyDay">日耗电估算 —</small>
+          </article>
+          <article class="kpi-card accent-red">
+            <span class="kpi-label">账户总余额</span>
+            <strong id="balance">—</strong>
+            <small id="availableBalance">可用 —</small>
+          </article>
+        </section>
+
+        <div class="main-grid">
+          <section class="panel chart-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">PERFORMANCE</p>
+                <h2>算力走势</h2>
+              </div>
+              <span id="chartWindow">最近 5 分钟</span>
+            </div>
+            <div class="chart-wrap"><canvas id="hashChart" aria-label="算力历史曲线"></canvas></div>
+            <div class="chart-legend"><span><i class="legend-line orange"></i>算力</span><span><i class="legend-line blue"></i>GPU 温度</span><span><i class="legend-line green"></i>功耗</span></div>
+          </section>
+
+          <section class="panel status-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">SYSTEM</p>
+                <h2>运行状态</h2>
+              </div>
+              <span id="minerState" class="badge">—</span>
+            </div>
+            <dl class="detail-list">
+              <div><dt>GPU</dt><dd id="gpuName">—</dd></div>
+              <div><dt>GPU 利用率</dt><dd id="gpuUtilization">—</dd></div>
+              <div><dt>温度 / 功耗</dt><dd id="gpuThermals">—</dd></div>
+              <div><dt>显存</dt><dd id="gpuMemory">—</dd></div>
+              <div><dt>活动任务</dt><dd id="activeJobs">—</dd></div>
+              <div><dt>累计哈希</dt><dd id="totalHashes">—</dd></div>
+            </dl>
+          </section>
+        </div>
+
+        <div class="lower-grid">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">NETWORK</p>
+                <h2>主网与收益依据</h2>
+              </div>
+              <span id="syncBadge" class="badge">—</span>
+            </div>
+            <dl class="detail-list two-columns">
+              <div><dt>主网高度</dt><dd id="chainHeight">—</dd></div>
+              <div><dt>节点 peers</dt><dd id="peers">—</dd></div>
+              <div><dt>平均区块时间</dt><dd id="blockTime">—</dd></div>
+              <div><dt>全网难度</dt><dd id="difficulty">—</dd></div>
+              <div><dt>全网估算算力</dt><dd id="networkHashRate">—</dd></div>
+              <div><dt>本机全网份额</dt><dd id="networkShare">—</dd></div>
+              <div><dt>最近区块奖励</dt><dd id="blockReward">—</dd></div>
+              <div><dt>数据来源</dt><dd id="rewardSource">—</dd></div>
+            </dl>
+            <p class="panel-note">理论日产出按当前难度、最近区块时间和区块奖励估算；实际到账以链上余额变化为准。</p>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">ACTIVITY</p>
+                <h2>矿工活动</h2>
+              </div>
+              <span id="activityWindow">日志窗口 512 KB</span>
+            </div>
+            <div id="activityList" class="activity-list"><p class="empty-state">等待数据</p></div>
+          </section>
+        </div>
+
+        <footer class="footer">
+          <span id="walletAddress">账户 —</span>
+          <span>自动刷新 · 5 秒</span>
+        </footer>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
