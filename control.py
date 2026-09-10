@@ -784,17 +784,21 @@ class MiningControl:
         NODE_PID_FILE.write_text(f"{process.pid}\n", encoding="utf-8")
         os.chmod(NODE_PID_FILE, 0o600)
         try:
-            if not wait_for_port(MINER_LISTEN_PORT, 120):
-                raise MiningControlError("节点未在 120 秒内开启矿工接口，请检查 node.log。")
             if self._auth_supported():
                 token_path, pin_path = self._auth_paths()
-                deadline = time.time() + 30
-                while time.time() < deadline and not (token_path.is_file() and pin_path.is_file()):
-                    if not process_is_running(process.pid):
-                        raise MiningControlError("节点启动后退出，请检查 node.log。")
+                # Current Quantus releases expose the miner listener over UDP,
+                # so TCP probing port 9833 cannot be used as a readiness check.
+                deadline = time.time() + 120
+                while time.time() < deadline and process_is_running(process.pid):
+                    if token_path.is_file() and pin_path.is_file():
+                        break
                     time.sleep(0.5)
+                if not process_is_running(process.pid):
+                    raise MiningControlError("节点启动后退出，请检查 node.log。")
                 if not (token_path.is_file() and pin_path.is_file()):
                     raise MiningControlError("节点认证文件未生成，请检查 node.log。")
+            elif not process_is_running(process.pid):
+                raise MiningControlError("节点启动后退出，请检查 node.log。")
         except Exception:
             stop_process(process.pid, "quantus-node")
             raise
