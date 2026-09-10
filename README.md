@@ -16,7 +16,7 @@
 在目标 Linux x86_64 服务器上执行：
 
 ```bash
-git clone <你的 Git 仓库地址> quantus-mining-control
+git clone https://github.com/AIRzZ90/quanbushu.git quantus-mining-control
 cd quantus-mining-control
 MINING_CONTROL_PASSWORD='设置一个新的面板密码' ./install.sh
 ```
