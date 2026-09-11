@@ -71,6 +71,8 @@ MINING_CONTROL_CPU_WORKERS=8
 MINING_CONTROL_GPU_DEVICES=1
 MINING_CONTROL_CUDA_GPU=1
 MINING_CONTROL_GPU_BATCH_SIZE=16777216
+MINING_CONTROL_HEARTBEAT_SECONDS=300
+MINING_CONTROL_HEARTBEAT_GRACE_SECONDS=180
 MINING_CONTROL_MINING_DIR=/root/quantus-mining
 ```
 
@@ -86,6 +88,10 @@ supervisorctl restart quantus-mining-control
 tail -f /root/quantus-mining/logs/miner.log
 tail -f /root/quantus-mining/logs/node.log
 ```
+
+控制服务每 5 分钟检查节点进程、矿工进程、矿工指标接口和节点 RPC。发现矿工异常时，会使用
+`data/launch.json` 中保存的运行配置自动恢复，不需要再次输入助记词。网页点击“停止挖矿”后会关闭自动恢复，
+直到下一次从网页启动；该文件只保存派生后的运行参数，不保存助记词。
 
 控制服务默认监听 `0.0.0.0:10200`。公网端口由服务器平台映射，不能从脚本运行时新增端口。
 

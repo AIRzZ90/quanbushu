@@ -34,10 +34,17 @@ ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
 DATA_DIR = Path(os.environ.get("MINING_CONTROL_DATA_DIR", str(ROOT / "data")))
 STATE_FILE = DATA_DIR / "state.json"
+LAUNCH_STATE_FILE = DATA_DIR / "launch.json"
 ENV_FILE = Path(os.environ.get("MINING_CONTROL_ENV_FILE", str(ROOT / ".env")))
 
 METRICS_TIMEOUT_SECONDS = 2.5
 RPC_TIMEOUT_SECONDS = 3.5
+HEARTBEAT_INTERVAL_SECONDS = max(
+    30, int(os.environ.get("MINING_CONTROL_HEARTBEAT_SECONDS", "300"))
+)
+HEARTBEAT_GRACE_SECONDS = max(
+    30, int(os.environ.get("MINING_CONTROL_HEARTBEAT_GRACE_SECONDS", "180"))
+)
 REWARD_REFRESH_SECONDS = 60
 WALLET_REFRESH_SECONDS = 15
 SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -111,6 +118,65 @@ BIND_PORT = int(os.environ.get("MINING_CONTROL_PORT", "10200"))
 MINER_METRICS_URL = f"http://127.0.0.1:{MINER_METRICS_PORT}/metrics"
 NODE_METRICS_URL = f"http://127.0.0.1:{NODE_METRICS_PORT}/metrics"
 NODE_RPC_URL = f"http://127.0.0.1:{NODE_RPC_PORT}"
+
+
+def load_launch_state() -> dict[str, object] | None:
+    try:
+        value = json.loads(LAUNCH_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def persist_launch_state(state: dict[str, object]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=DATA_DIR,
+        delete=False,
+    ) as handle:
+        json.dump(state, handle, ensure_ascii=True, separators=(",", ":"))
+        temp_name = handle.name
+    os.chmod(temp_name, 0o600)
+    os.replace(temp_name, LAUNCH_STATE_FILE)
+
+
+def normalize_launch_config(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict) or value.get("enabled") is not True:
+        return None
+
+    inner_hash = value.get("inner_hash")
+    address = value.get("address")
+    node_name = value.get("node_name", NODE_NAME_DEFAULT)
+    cpu_workers = safe_int(value.get("cpu_workers", DEFAULT_CPU_WORKERS))
+    gpu_devices = safe_int(value.get("gpu_devices", DEFAULT_GPU_DEVICES))
+    wallet_index = safe_int(value.get("wallet_index", 0))
+    if (
+        not isinstance(inner_hash, str)
+        or not re.fullmatch(r"0x[0-9a-fA-F]{64}", inner_hash)
+        or not isinstance(address, str)
+        or not re.fullmatch(r"qz[1-9A-HJ-NP-Za-km-z]{40,62}", address)
+        or not isinstance(node_name, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", node_name)
+        or cpu_workers is None
+        or cpu_workers < 0
+        or gpu_devices is None
+        or gpu_devices < 0
+        or gpu_devices > 16
+        or wallet_index is None
+        or wallet_index < 0
+    ):
+        return None
+    return {
+        "enabled": True,
+        "inner_hash": inner_hash,
+        "address": address,
+        "node_name": node_name,
+        "cpu_workers": cpu_workers,
+        "gpu_devices": gpu_devices,
+        "wallet_index": wallet_index,
+    }
 
 
 def _b64decode(value: str) -> bytes:
@@ -641,6 +707,11 @@ class MiningControl:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.last_action_at = 0.0
+        self.service_started_at = time.time()
+        self.heartbeat_last_at = 0.0
+        self.heartbeat_last_ok: bool | None = None
+        self.heartbeat_last_message = ""
+        self.heartbeat_recoveries = 0
 
     def _auth_supported(self) -> bool:
         try:
@@ -722,6 +793,99 @@ class MiningControl:
                 temp_path.unlink()
             except OSError:
                 pass
+
+    def _save_launch_config(self, config: dict[str, object]) -> dict[str, object]:
+        normalized = normalize_launch_config(config)
+        if normalized is None:
+            raise MiningControlError("挖矿恢复配置无效，无法保存。")
+        normalized["updated_at"] = int(time.time())
+        try:
+            persist_launch_state(normalized)
+        except OSError as error:
+            raise MiningControlError("无法保存挖矿自动恢复配置。") from error
+        return normalized
+
+    def _infer_launch_config(self) -> dict[str, object] | None:
+        node = find_process("quantus-node")
+        if not node:
+            return None
+        miner = find_process("quantus-miner")
+        try:
+            address = WALLET_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        cpu_workers = argument_value(miner[1], "--cpu-workers") if miner else None
+        gpu_devices = argument_value(miner[1], "--gpu-devices") if miner else None
+        config = {
+            "enabled": True,
+            "inner_hash": argument_value(node[1], "--rewards-inner-hash"),
+            "address": address,
+            "node_name": argument_value(node[1], "--name") or NODE_NAME_DEFAULT,
+            "cpu_workers": safe_int(cpu_workers) if cpu_workers is not None else DEFAULT_CPU_WORKERS,
+            "gpu_devices": safe_int(gpu_devices) if gpu_devices is not None else DEFAULT_GPU_DEVICES,
+            "wallet_index": 0,
+        }
+        return normalize_launch_config(config)
+
+    def _recovery_config(self) -> dict[str, object] | None:
+        saved = load_launch_state()
+        if saved is not None:
+            return normalize_launch_config(saved)
+        inferred = self._infer_launch_config()
+        if inferred is None:
+            return None
+        self._save_launch_config(inferred)
+        print("心跳已从现有 node/miner 进程保存自动恢复配置。", flush=True)
+        return inferred
+
+    def _node_matches_config(self, config: dict[str, object]) -> bool:
+        node = find_process("quantus-node")
+        if not node:
+            return False
+        if argument_value(node[1], "--name") != config["node_name"]:
+            return False
+        current_inner = argument_value(node[1], "--rewards-inner-hash")
+        if not isinstance(current_inner, str) or current_inner.lower() != str(
+            config["inner_hash"]
+        ).lower():
+            return False
+        if self._auth_supported():
+            token_path, pin_path = self._auth_paths()
+            if not (token_path.is_file() and pin_path.is_file()):
+                return False
+        return True
+
+    def _start_with_config(self, config: dict[str, object], action: str) -> dict[str, object]:
+        normalized = self._save_launch_config(config)
+        node_name = str(normalized["node_name"])
+        inner_hash = str(normalized["inner_hash"])
+        address = str(normalized["address"])
+        cpu_workers = int(normalized["cpu_workers"])
+        gpu_devices = int(normalized["gpu_devices"])
+
+        if not self._node_matches_config(normalized):
+            self._stop_named("quantus-miner", MINER_PID_FILE)
+            self._stop_named("quantus-node", NODE_PID_FILE)
+            self._start_node(node_name, inner_hash)
+        elif self._auth_supported():
+            token_path, pin_path = self._auth_paths()
+            if not (token_path.is_file() and pin_path.is_file()):
+                raise MiningControlError("节点认证文件不存在，无法安全启动矿工。")
+
+        self._write_wallet_address(address)
+        self._stop_named("quantus-miner", MINER_PID_FILE)
+        miner_pid = self._start_miner(cpu_workers, gpu_devices)
+        self.last_action_at = time.time()
+        return {
+            "ok": True,
+            "action": action,
+            "address": address,
+            "node_name": node_name,
+            "cpu_workers": cpu_workers,
+            "gpu_devices": gpu_devices,
+            "miner_pid": miner_pid,
+            "control": self.snapshot(),
+        }
 
     def _stop_named(self, executable_name: str, pid_file: Path) -> bool:
         pid = read_pid_file(pid_file)
@@ -879,6 +1043,16 @@ class MiningControl:
             "cpu_workers": safe_int(argument_value(miner_argv, "--cpu-workers")),
             "gpu_devices": safe_int(argument_value(miner_argv, "--gpu-devices")),
             "wallet_address": address,
+            "heartbeat": {
+                "enabled": HEARTBEAT_INTERVAL_SECONDS > 0,
+                "interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
+                "last_check_at": (
+                    int(self.heartbeat_last_at * 1000) if self.heartbeat_last_at else None
+                ),
+                "last_ok": self.heartbeat_last_ok,
+                "last_message": self.heartbeat_last_message,
+                "recoveries": self.heartbeat_recoveries,
+            },
         }
 
     def start(self, payload: object) -> dict[str, object]:
@@ -919,41 +1093,18 @@ class MiningControl:
                 raise MiningControlError("至少启用一个 CPU worker 或 GPU 设备。")
 
             address, inner_hash = self._derive_wormhole(phrase, wallet_index)
-            current_node = find_process("quantus-node")
-            current_inner = argument_value(current_node[1], "--rewards-inner-hash") if current_node else None
-            current_name = argument_value(current_node[1], "--name") if current_node else None
-            reuse_node = (
-                current_node is not None
-                and current_inner is not None
-                and current_inner.lower() == inner_hash.lower()
-                and current_name == node_name
-                and port_is_open(MINER_LISTEN_PORT)
+            return self._start_with_config(
+                {
+                    "enabled": True,
+                    "inner_hash": inner_hash,
+                    "address": address,
+                    "node_name": node_name,
+                    "cpu_workers": cpu_workers,
+                    "gpu_devices": gpu_devices,
+                    "wallet_index": wallet_index,
+                },
+                "started",
             )
-
-            if not reuse_node:
-                self._stop_named("quantus-miner", MINER_PID_FILE)
-                self._stop_named("quantus-node", NODE_PID_FILE)
-                self._start_node(node_name, inner_hash)
-            else:
-                if self._auth_supported():
-                    token_path, pin_path = self._auth_paths()
-                    if not (token_path.is_file() and pin_path.is_file()):
-                        raise MiningControlError("节点认证文件不存在，无法安全启动矿工。")
-
-            self._write_wallet_address(address)
-            self._stop_named("quantus-miner", MINER_PID_FILE)
-            miner_pid = self._start_miner(cpu_workers, gpu_devices)
-            self.last_action_at = time.time()
-            return {
-                "ok": True,
-                "action": "started",
-                "address": address,
-                "node_name": node_name,
-                "cpu_workers": cpu_workers,
-                "gpu_devices": gpu_devices,
-                "miner_pid": miner_pid,
-                "control": self.snapshot(),
-            }
         finally:
             # Drop the local reference as soon as the child process has consumed stdin.
             phrase = ""
@@ -962,10 +1113,103 @@ class MiningControl:
         if not self.lock.acquire(timeout=5):
             raise MiningControlError("已有控制操作正在执行，请稍后重试。")
         try:
+            saved = load_launch_state() or {}
+            saved["enabled"] = False
+            saved["updated_at"] = int(time.time())
+            try:
+                persist_launch_state(saved)
+            except OSError as error:
+                raise MiningControlError("无法保存停机状态，未执行停止操作。") from error
             self._stop_named("quantus-miner", MINER_PID_FILE)
             self._stop_named("quantus-node", NODE_PID_FILE)
             self.last_action_at = time.time()
             return {"ok": True, "action": "stopped", "control": self.snapshot()}
+        finally:
+            self.lock.release()
+
+    def _heartbeat_probe(self, config: dict[str, object]) -> tuple[bool, str]:
+        node = find_process("quantus-node")
+        if not node:
+            return False, "节点进程不存在"
+        if not self._node_matches_config(config):
+            return False, "节点进程参数或认证文件不匹配"
+
+        miner = find_process("quantus-miner")
+        if not miner:
+            return False, "矿工进程不存在"
+        if argument_value(miner[1], "--cpu-workers") != str(config["cpu_workers"]):
+            return False, "矿工 CPU worker 配置不匹配"
+        if argument_value(miner[1], "--gpu-devices") != str(config["gpu_devices"]):
+            return False, "矿工 GPU 配置不匹配"
+
+        try:
+            miner_rows = parse_prometheus(
+                read_http(MINER_METRICS_URL, timeout=METRICS_TIMEOUT_SECONDS).decode("utf-8")
+            )
+        except (OSError, HTTPError, URLError, RuntimeError) as error:
+            return False, f"矿工指标不可用: {str(error)[:100]}"
+
+        try:
+            health = rpc_call("system_health")
+        except (OSError, HTTPError, URLError, RuntimeError, json.JSONDecodeError) as error:
+            return False, f"节点 RPC 不可用: {str(error)[:100]}"
+
+        grace_started_at = max(self.service_started_at, self.last_action_at)
+        in_grace_period = time.time() - grace_started_at < HEARTBEAT_GRACE_SECONDS
+        active_jobs = metric_value(miner_rows, "miner_active_jobs")
+        hash_rate = metric_value(miner_rows, "miner_hash_rate")
+        syncing = isinstance(health, dict) and bool(health.get("isSyncing"))
+        if not in_grace_period and not syncing:
+            if active_jobs is not None and active_jobs < 1:
+                return False, "矿工没有活跃任务"
+            if (
+                active_jobs is not None
+                and active_jobs >= 1
+                and hash_rate is not None
+                and hash_rate <= 0
+            ):
+                return False, "矿工算力为零"
+        return True, "node、miner、metrics 和 RPC 正常"
+
+    def heartbeat(self) -> None:
+        if not self.lock.acquire(timeout=1):
+            self.heartbeat_last_at = time.time()
+            self.heartbeat_last_ok = None
+            self.heartbeat_last_message = "已有控制操作正在执行，本次检查跳过"
+            return
+        try:
+            self.heartbeat_last_at = time.time()
+            saved = load_launch_state()
+            if saved is not None and saved.get("enabled") is not True:
+                self.heartbeat_last_ok = True
+                self.heartbeat_last_message = "已手动停止，自动恢复未启用"
+                return
+
+            config = self._recovery_config()
+            if config is None:
+                self.heartbeat_last_ok = None
+                self.heartbeat_last_message = "没有可用的挖矿自动恢复配置"
+                return
+
+            healthy, message = self._heartbeat_probe(config)
+            if healthy:
+                self.heartbeat_last_ok = True
+                self.heartbeat_last_message = message
+                print(f"心跳检查正常: {message}", flush=True)
+                return
+
+            print(f"心跳发现异常: {message}，正在自动恢复矿机。", flush=True)
+            try:
+                self._start_with_config(config, "recovered")
+            except Exception as error:
+                self.heartbeat_last_ok = False
+                self.heartbeat_last_message = f"自动恢复失败: {str(error)[:140]}"
+                print(self.heartbeat_last_message, flush=True)
+                return
+            self.heartbeat_recoveries += 1
+            self.heartbeat_last_ok = True
+            self.heartbeat_last_message = f"已自动恢复: {message}"
+            print(self.heartbeat_last_message, flush=True)
         finally:
             self.lock.release()
 
@@ -1506,6 +1750,24 @@ class MonitorHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": False, "error": "not found"}, 404)
 
 
+def heartbeat_worker() -> None:
+    print(
+        f"矿机心跳已开启：每 {HEARTBEAT_INTERVAL_SECONDS} 秒检查，"
+        f"启动恢复宽限期 {HEARTBEAT_GRACE_SECONDS} 秒。",
+        flush=True,
+    )
+    time.sleep(min(10, HEARTBEAT_INTERVAL_SECONDS))
+    while True:
+        try:
+            CONTROL.heartbeat()
+        except Exception as error:
+            CONTROL.heartbeat_last_at = time.time()
+            CONTROL.heartbeat_last_ok = False
+            CONTROL.heartbeat_last_message = f"心跳执行失败: {str(error)[:140]}"
+            print(CONTROL.heartbeat_last_message, flush=True)
+        time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((BIND_HOST, BIND_PORT), MonitorHandler)
@@ -1522,6 +1784,11 @@ def main() -> None:
     else:
         scheme = "http"
     print(f"Quantus mining control listening on {scheme}://{BIND_HOST}:{BIND_PORT}", flush=True)
+    threading.Thread(
+        target=heartbeat_worker,
+        name="quantus-mining-heartbeat",
+        daemon=True,
+    ).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

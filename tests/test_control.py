@@ -2,8 +2,10 @@ import base64
 import hashlib
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,78 @@ Inner Hash: 0xf90f46696371490042e3e605662fc222d98055f14c12b7fa8fc4f7aaa7c15c77
 
     def test_effective_cpu_count_is_positive(self):
         self.assertGreaterEqual(control.effective_cpu_count(), 1)
+
+    def test_launch_state_round_trip_is_private(self):
+        address = "qzodMHCJCWPrwVwCNhdKKKwaheRYj5vuAKQRQbwk9JGE36Pfu"
+        config = {
+            "enabled": True,
+            "inner_hash": "0x" + ("ab" * 32),
+            "address": address,
+            "node_name": "quantus-miner",
+            "cpu_workers": 8,
+            "gpu_devices": 8,
+            "wallet_index": 0,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            old_data_dir = control.DATA_DIR
+            old_state_file = control.LAUNCH_STATE_FILE
+            control.DATA_DIR = Path(directory)
+            control.LAUNCH_STATE_FILE = Path(directory) / "launch.json"
+            try:
+                control.persist_launch_state(config)
+                loaded = control.load_launch_state()
+            finally:
+                control.DATA_DIR = old_data_dir
+                control.LAUNCH_STATE_FILE = old_state_file
+        self.assertEqual(loaded, config)
+        self.assertNotIn("mnemonic", loaded)
+
+    def test_heartbeat_accepts_active_miner_without_tcp_probe(self):
+        instance = control.MiningControl()
+        instance.service_started_at = 0
+        config = {
+            "enabled": True,
+            "inner_hash": "0x" + ("ab" * 32),
+            "address": "qzodMHCJCWPrwVwCNhdKKKwaheRYj5vuAKQRQbwk9JGE36Pfu",
+            "node_name": "quantus-miner",
+            "cpu_workers": 8,
+            "gpu_devices": 8,
+            "wallet_index": 0,
+        }
+        node = (
+            101,
+            [
+                "/root/quantus-node",
+                "--name",
+                "quantus-miner",
+                "--rewards-inner-hash",
+                config["inner_hash"],
+            ],
+        )
+        miner = (
+            202,
+            [
+                "/root/quantus-miner",
+                "serve",
+                "--cpu-workers",
+                "8",
+                "--gpu-devices",
+                "8",
+            ],
+        )
+        with (
+            patch.object(control, "find_process", side_effect=[node, node, miner]),
+            patch.object(instance, "_auth_supported", return_value=False),
+            patch.object(
+                control,
+                "read_http",
+                return_value=b"miner_active_jobs 1\nminer_hash_rate 100\n",
+            ),
+            patch.object(control, "rpc_call", return_value={"isSyncing": False}),
+        ):
+            healthy, message = instance._heartbeat_probe(config)
+        self.assertTrue(healthy)
+        self.assertIn("metrics", message)
 
 
 if __name__ == "__main__":
