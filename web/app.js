@@ -309,8 +309,8 @@ async function startMining(event) {
       setControlMessage(body?.error || `启动接口返回 ${response.status}`, "error");
       return;
     }
-    const address = body.address ? `奖励地址 ${body.address}` : "挖矿已启动。";
-    setControlMessage(address, "success");
+    const address = body.address ? `奖励地址 ${body.address}。` : "";
+    setControlMessage(`${address}节点和矿工已启动；首次启动请等待节点同步完成，期间无需重复点击。`, "success");
     await loadStatus();
   } catch {
     setControlMessage("无法连接启动控制服务。", "error");

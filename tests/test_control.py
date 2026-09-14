@@ -47,6 +47,14 @@ Inner Hash: 0xf90f46696371490042e3e605662fc222d98055f14c12b7fa8fc4f7aaa7c15c77
     def test_effective_cpu_count_is_positive(self):
         self.assertGreaterEqual(control.effective_cpu_count(), 1)
 
+    def test_running_miner_is_syncing_before_hash_rate_is_available(self):
+        state = control.classify_mining_state([], False, True, True)
+        self.assertEqual(state, "syncing")
+
+    def test_stopped_miner_remains_offline(self):
+        state = control.classify_mining_state([], False, False, False)
+        self.assertEqual(state, "offline")
+
     def test_launch_state_round_trip_is_private(self):
         address = "qzodMHCJCWPrwVwCNhdKKKwaheRYj5vuAKQRQbwk9JGE36Pfu"
         config = {

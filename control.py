@@ -216,6 +216,20 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def classify_mining_state(
+    errors: list[str], online: bool, syncing: bool | None, miner_running: bool
+) -> str:
+    if errors:
+        return "warning"
+    if online and syncing is False:
+        return "online"
+    if miner_running and syncing is True:
+        return "syncing"
+    if online:
+        return "syncing"
+    return "offline"
+
+
 def safe_float(value: object) -> float | None:
     try:
         number = float(value)
@@ -1456,14 +1470,12 @@ def build_snapshot() -> dict[str, object]:
         if isinstance(health, dict) and "isSyncing" in health:
             syncing = bool(health.get("isSyncing"))
 
-        if errors:
-            state = "warning"
-        elif online and syncing is False:
-            state = "online"
-        elif online:
-            state = "syncing"
-        else:
-            state = "offline"
+        state = classify_mining_state(
+            errors,
+            online,
+            syncing,
+            bool(process.get("running")),
+        )
 
         activity = read_activity()
         return {
