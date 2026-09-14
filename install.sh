@@ -143,10 +143,19 @@ if [ ! -f "$NODE_KEY_FILE" ]; then
   chmod 600 "$NODE_KEY_FILE"
 fi
 
-PASSWORD_HASH="${MINING_CONTROL_PASSWORD_HASH:-}"
 PASSWORD="${MINING_CONTROL_PASSWORD:-}"
-if [ -z "$PASSWORD_HASH" ] && [ -z "$PASSWORD" ] && [ -f "$ENV_FILE" ]; then
-  PASSWORD_HASH="$(sed -n 's/^MINING_CONTROL_PASSWORD_HASH=//p' "$ENV_FILE" | head -n 1 | sed 's/^"\(.*\)"$/\1/')"
+PASSWORD_HASH=""
+if [ -n "$PASSWORD" ]; then
+  info "正在重置前端访问密码..."
+elif [ -n "${MINING_CONTROL_PASSWORD_HASH:-}" ]; then
+  PASSWORD_HASH="$MINING_CONTROL_PASSWORD_HASH"
+elif [ -f "$ENV_FILE" ]; then
+  PASSWORD_HASH="$(
+    unset MINING_CONTROL_PASSWORD_HASH
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    printf '%s' "${MINING_CONTROL_PASSWORD_HASH:-}"
+  )"
 fi
 
 if [ -z "$PASSWORD_HASH" ]; then
