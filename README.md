@@ -21,6 +21,8 @@ git clone https://github.com/AIRzZ90/quanbushu.git /root/quantus-mining-control 
 
 安装脚本会生成密码哈希和 HTTPS 证书，并安装 `supervisor` 服务。部署结束时会打印前端登录地址。Vast.ai 环境会自动使用 `PUBLIC_IPADDR` 和 `VAST_TCP_PORT_<容器端口>` 计算公网地址；其他环境可以通过 `MINING_CONTROL_PUBLIC_URL` 指定完整地址。
 
+重复运行 `install.sh` 时，不传 `MINING_CONTROL_PASSWORD` 会保留现有面板密码；显式传入该变量会生成新的密码哈希并重置面板密码。
+
 再次部署或更新已有目录时，使用：
 
 ```bash

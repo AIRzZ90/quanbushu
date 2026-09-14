@@ -144,12 +144,12 @@ if [ ! -f "$NODE_KEY_FILE" ]; then
 fi
 
 PASSWORD_HASH="${MINING_CONTROL_PASSWORD_HASH:-}"
-if [ -z "$PASSWORD_HASH" ] && [ -f "$ENV_FILE" ]; then
+PASSWORD="${MINING_CONTROL_PASSWORD:-}"
+if [ -z "$PASSWORD_HASH" ] && [ -z "$PASSWORD" ] && [ -f "$ENV_FILE" ]; then
   PASSWORD_HASH="$(sed -n 's/^MINING_CONTROL_PASSWORD_HASH=//p' "$ENV_FILE" | head -n 1 | sed 's/^"\(.*\)"$/\1/')"
 fi
 
 if [ -z "$PASSWORD_HASH" ]; then
-  PASSWORD="${MINING_CONTROL_PASSWORD:-}"
   if [ -z "$PASSWORD" ]; then
     if [ ! -t 0 ]; then
       die "非交互部署必须设置 MINING_CONTROL_PASSWORD 环境变量。"
